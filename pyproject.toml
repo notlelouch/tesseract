@@ -10,6 +10,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 tesseract-record = "tesseract.recorder.app:main"
+tesseract-parse = "tesseract.parser.run:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -3,7 +3,7 @@ VENV := .venv
 BIN := $(VENV)/bin
 CONFIG ?= config.toml
 
-.PHONY: install test run run-dev summary clean
+.PHONY: install test run run-dev summary parse clean
 
 install:
 	uv venv -p $(PY) $(VENV) || $(PY) -m venv $(VENV)
@@ -21,3 +21,7 @@ run-dev:
 
 summary:
 	$(BIN)/python -m tesseract.recorder.summary --data-dir $(or $(DATA),data)
+
+# raw -> typed JSONL plus per-day reports; never modifies data/raw
+parse:
+	$(BIN)/python -m tesseract.parser.run --raw $(or $(DATA),data)/raw --out $(or $(DATA),data)/typed --reports $(or $(DATA),data)/reports/typed
