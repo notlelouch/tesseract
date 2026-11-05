@@ -1,1 +1,205 @@
 # tesseract
+
+Tesseract v1: a market data recorder for BTC perpetuals. It records public Mudrex and Binance USD-M
+market data to append-only JSONL with timestamps, so a later paper engine can replay exactly what
+was received.
+
+- It uses only public, unauthenticated market data endpoints. There are no API keys and no order
+  endpoints, and the config loader rejects any key that looks like a secret.
+- It stores raw payloads verbatim. Parsing into typed fields is a separate, later step, so a parser
+  bug can be fixed and the data replayed.
+
+## Setup and run
+
+Requires Python 3.11+ (uses stdlib `tomllib`). The only runtime dependency is `aiohttp`.
+
+```bash
+make install                   # creates .venv (uv if available, else venv) and installs -e .[dev]
+make test                      # unit tests; fixtures only, no network
+make run                       # tesseract-record --config config.toml (runs until SIGINT/SIGTERM)
+make run-dev DURATION=3600     # stops itself after DURATION seconds
+make run CONFIG=config.dev.toml
+make summary                   # records, MB/hour per stream, REST latency percentiles
+```
+
+- `config.toml` is the full config with both venues enabled.
+- `config.dev.toml` is the same, but with Binance disabled. Binance is unreachable from the dev
+  network (see "Known doc mismatches and findings").
+
+## File layout
+
+```
+data/
+  raw/<venue>/<stream>/<YYYY-MM-DD>.jsonl     # one file per venue, stream and UTC date
+  latency/<venue>/<YYYY-MM-DD>.jsonl          # REST start/end and WS connect/disconnect times
+```
+
+Streams currently produced:
+
+| venue | stream dir | source |
+|---|---|---|
+| mudrex | `ws_ticker_1s` | WS `ticker@1s` (last `p` and mark `mp`) |
+| mudrex | `ws_kline_1m_btcusdt` | WS `kline@1m@btcusdt` |
+| mudrex | `ws_markkline_1m_btcusdt` | WS `markKline@1m@btcusdt` |
+| mudrex | `ws_control` | WS subscribe acks and errors (anything without a `stream` field) |
+| mudrex | `rest_kline`, `rest_mark_kline` | `GET /kline`, `GET /mark-kline` polled every 60s, 5-minute lookback |
+| binance | `ws_btcusdt_depth_100ms` | WS diff depth |
+| binance | `ws_btcusdt_markprice_1s` | WS mark price |
+| binance | `ws_control` | WS subscribe acks and errors |
+| binance | `rest_depth` | `GET /fapi/v1/depth?limit=1000` every 60s, plus immediately after any depth-WS reconnect |
+| binance | `rest_premium_index` | `GET /fapi/v1/premiumIndex` every 10s |
+| binance | `rest_funding_rate` | `GET /fapi/v1/fundingRate` every 1h |
+| binance | `rest_klines` | `GET /fapi/v1/klines` 1m, last 5, every 60s (cross-check) |
+
+The example name in the brief was `ws_ticker`. Stream directories are named after the subscribed
+stream (`ticker@1s` becomes `ws_ticker_1s`), so `ticker@5s` would not collide with it.
+
+### Record schema (`v: 1`)
+
+Every line is one JSON object. Common fields: `v`, `type`, `venue`, `stream`, `recv_ns` (local
+receive time in ns since the epoch, UTC).
+
+| type | meaning | extra fields |
+|---|---|---|
+| `data` | one WS frame or one REST response | `source` (`ws`/`rest`), `exch_ts_ms` (exchange time if the venue provides one, else `null`), `raw` (payload text exactly as received). WS: `conn`, `conn_id`. REST: `req_start_ns`, `request` {url, params}, `status`, `used_weight_1m` (Binance) |
+| `session_start` | first successful connect of this recorder process for this stream | `conn`, `conn_id`, `url` |
+| `gap` | written to every stream of a connection after a reconnect | `gap_start_ns` (last frame received before the drop, or the drop time if none), `gap_end_ns` (re-subscribe sent), `gap_ms`, `reason` |
+| `error` | a REST poll failed after all retries | `status`, `error`, `attempts`, `raw` (body if any) |
+
+Where `exch_ts_ms` comes from:
+
+| source | exch_ts_ms |
+|---|---|
+| Binance WS | `data.E` (event time) |
+| Binance REST depth | `E` |
+| Binance REST premiumIndex | `time` |
+| Binance REST fundingRate, klines | `null` |
+| Mudrex (all) | `null`: no Mudrex frame or response carries a send or event time. Kline `t` is the candle open time and stays in `raw`. |
+
+For replay:
+
+- Restarts show up as a new `session_start`.
+- Disconnects within a run show up as `gap` records.
+- A Binance depth gap means the local book must be rebuilt from the next `rest_depth` snapshot.
+  The recorder takes one immediately after reconnecting.
+
+On macOS, `time.time_ns()` has microsecond resolution, so `recv_ns` ends in `000`.
+
+### Durability
+
+- The writer buffers in memory and flushes every `flush_interval_s` (1s), with `fsync`, and again on
+  shutdown.
+- If a disk write fails, the records stay buffered and the error is logged.
+- If the buffer exceeds `max_buffer_records`, the recorder stops with exit code 2 rather than drop
+  data.
+- On reopen, a torn last line (left by a crash) is terminated so later lines stay parseable.
+- Delivery is at-least-once: a write that partly succeeds and is then retried can duplicate lines.
+
+## Endpoints used
+
+| venue | endpoint | params |
+|---|---|---|
+| Mudrex REST | `GET https://trade.mudrex.com/fapi/v1/price/kline` | `assets=BTC/USDT&aggregation=1m&start_time=<s>&end_time=<s>` |
+| Mudrex REST | `GET https://trade.mudrex.com/fapi/v1/price/mark-kline` | same |
+| Mudrex WS | `wss://trade.mudrex.com/fapi/v1/price/ws/linear` | `{"id":1,"method":"SUBSCRIBE","params":["kline@1m@btcusdt","markKline@1m@btcusdt"]}` and `{"id":2,"method":"SUBSCRIBE","params":["ticker@1s"],"assets":["btcusdt"]}` |
+| Binance REST | `GET https://fapi.binance.com/fapi/v1/depth` | `symbol=BTCUSDT&limit=1000` |
+| Binance REST | `GET /fapi/v1/premiumIndex` | `symbol=BTCUSDT` |
+| Binance REST | `GET /fapi/v1/fundingRate` | `symbol=BTCUSDT&limit=100` |
+| Binance REST | `GET /fapi/v1/klines` | `symbol=BTCUSDT&interval=1m&limit=5` |
+| Binance WS | `wss://fstream.binance.com/public/stream` | `{"method":"SUBSCRIBE","params":["btcusdt@depth@100ms"],"id":1}` |
+| Binance WS | `wss://fstream.binance.com/market/stream` | `{"method":"SUBSCRIBE","params":["btcusdt@markPrice@1s"],"id":2}` |
+
+## Rate limits and reliability
+
+| limit | value | how it is enforced |
+|---|---|---|
+| Mudrex REST | 300 req/min/IP (documented) | sliding-window limiter; the recorder uses about 2 req/min |
+| Mudrex WS | 15 subscriptions per connection, 10 new connections/min/IP (documented) | config validation fails above 15; connect limiter at 10/60s |
+| Mudrex idle close | 40s idle (documented) | protocol PING frame every 20s; reconnect if no data for 60s |
+| Binance REST weight | 2400/min/IP (**unverified**, see below) | weight limiter set to 1200/60s (half). Weights: depth(1000)=20, others=1, about 50 weight/min in use |
+| Binance fundingRate | shared 500 req / 5 min / IP (**unverified**) | separate limiter |
+| Binance WS connections | per-IP connection rate (**unverified**) | 5 connects/s limiter; only 2 connections are used |
+
+Reliability:
+
+- Every REST call has a 10s timeout.
+- HTTP 429 and 418 honor `Retry-After` (delta-seconds or HTTP-date) and pause every caller sharing
+  that venue's limiter.
+- With no `Retry-After`, and for 5xx and timeouts, retries use backoff. Other 4xx responses are not
+  retried.
+- After `http_max_retries`, the failure is written as an `error` record.
+- WS reconnects use exponential backoff with jitter (`[c/2, c]`, `c = min(60, base·2^n)`), capped
+  at 60s. The backoff resets once data flows again.
+- A connection that answers pings but sends no data is recycled after `ws_stale_timeout_s`. This
+  uses an outer deadline, because aiohttp's per-read timeout restarts on every pong.
+- Host sleep (for example, a laptop lid or idle sleep) pauses the process, and the venue drops the
+  socket. The recorder reconnects and writes a `gap` covering the sleep, as observed in dev.
+  `--duration` uses the wall clock, because the macOS monotonic clock stops during sleep. For long
+  runs on a Mac, use `caffeinate -ims make run`.
+- SIGINT and SIGTERM cancel all tasks, log WS disconnects, flush and close files, and close the
+  HTTP session.
+
+## Known doc mismatches and findings
+
+Checked on 2026-11-05. The Mudrex docs are at https://docs.trade.mudrex.com/docs/market-data.md
+and https://docs.trade.mudrex.com/docs/websocket-streams.md (pages updated 2026-06-26).
+
+### Mudrex (brief vs docs vs live behavior)
+
+1. **REST parameter names.**
+   - The docs use `assets` (comma-separated, max 25), `aggregation`, and required
+     `start_time`/`end_time`, both inclusive and in epoch seconds.
+   - There is no `symbol`, `interval` or `limit` parameter. Sending `symbol=` returns HTTP 400
+     `assets are required` (verified live).
+   - Responses key assets in lowercase (`btc/usdt`).
+   - Candle arrays are `[t,o,h,l,c,v]` for kline and `[t,o,h,l,c]` for mark-kline.
+2. **REST intervals.**
+   - Documented as `1m, 3t, 5t, 10t, 15t, 30t, 1h, …`. The `t` suffix is not defined, and is
+     probably minutes.
+   - The WS supports only `1s` and `1m`.
+3. **Mudrex PING.**
+   - The docs say "send PING frames" without defining a payload.
+   - Live: a text `PING` returns `invalid JSON`, and `{"method":"PING"}` returns `unknown method`.
+   - **WebSocket protocol ping frames** work, and that is what the recorder sends.
+4. **Ticker subscription.**
+   - Needs a separate `assets` field (`"params":["ticker@1s"],"assets":["btcusdt"]`).
+   - `data` is an array of `{s, p, mp}`. Only assets whose price changed are pushed.
+5. **WS klines** push once per minute with the just-closed candle only. There are no in-progress
+   updates (observed live).
+6. **No exchange timestamps** on any Mudrex WS frame or REST response.
+7. **Undocumented in the brief:** the REST limit of 300 req/min/IP. REST and WS limits are tracked
+   separately.
+8. **Path inconsistency in the docs.** The Market Data index lists `GET /price/kline`, while the
+   per-endpoint curl examples use `/fapi/v1/price/kline`. The full path is used here and was
+   verified live.
+
+### Binance
+
+1. **Binance is unreachable from the dev network.**
+   - `fapi.binance.com`, `fstream.binance.com` and `developers.binance.com` resolve to an ISP
+     block address via the system resolver, and connections time out.
+   - **No attempt was made to bypass this** (no alternate DNS, VPN or proxy). Whether and from
+     where to reach Binance is a compliance decision.
+   - As a result, no live Binance payload was recorded, the Binance client is tested only against
+     synthetic fixtures, and the official Binance docs could not be read directly.
+2. **WS endpoint split (differs from the brief).**
+   - Per secondary sources (see below), Binance split USD-M market streams on 2026-03-06:
+     `wss://fstream.binance.com/public` for high-frequency data (`depth`, `bookTicker`) and
+     `wss://fstream.binance.com/market` for the rest (`markPrice`, `kline`, `aggTrade`, …).
+   - The **legacy `wss://fstream.binance.com/ws` was retired on 2026-04-23**.
+   - The recorder uses `/public/stream` for `btcusdt@depth@100ms` and `/market/stream` for
+     `btcusdt@markPrice@1s`.
+   - Both URLs are in config. **Verify against the official "WebSocket System Upgrade Notice
+     (2026-03-06)" before production.**
+   - Sources:
+     - [sieblyio/binance v3.5.0](https://github.com/sieblyio/binance/releases/tag/v3.5.0). The
+       v3.6.11 package source routes `depth`/`bookTicker` to `/public/stream` and all other
+       streams to `/market/stream`.
+     - [ccxt/go-binance#809](https://github.com/ccxt/go-binance/pull/809).
+     - [Binance derivatives change log](https://developers.binance.com/docs/derivatives/change-log).
+3. **Mark price stream field `ap`.** A 2026-03-16 change log entry reportedly adds a moving-average
+   field `ap` to mark price streams. This does not affect raw recording.
+4. **Unverified numbers.** These values come from prior knowledge, not from docs read today: REST
+   weight limit 2400/min, depth weight 20 at `limit=1000`, the fundingRate 500/5min/IP limit, and
+   the WS connection-rate and ping/pong rules. They are in config, set conservatively, and must be
+   confirmed against the official docs.
