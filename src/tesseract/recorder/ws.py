@@ -94,7 +94,8 @@ class WsConnection:
         ping_interval_s: float,
         stale_timeout_s: float,
         connect_timeout_s: float = 10.0,
-        on_reconnect: Callable[[], Awaitable[None]] | None = None,
+        on_subscribed: Callable[[bool], Awaitable[None]] | None = None,
+        on_frame: Callable[[str, Any, int], None] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self.session = session
@@ -111,7 +112,10 @@ class WsConnection:
         self.ping_interval_s = ping_interval_s
         self.stale_timeout_s = stale_timeout_s
         self.connect_timeout_s = connect_timeout_s
-        self.on_reconnect = on_reconnect
+        # Called (as a task) after every successful subscribe; arg is True on reconnects.
+        self.on_subscribed = on_subscribed
+        # Called after each stream frame is written: (raw stream name, parsed JSON, recv_ns).
+        self.on_frame = on_frame
         self._sleep = sleep
         self.gaps = GapTracker()
         self.conn_id = 0
@@ -152,6 +156,11 @@ class WsConnection:
             data_record(venue=self.venue, stream=stream_key, source="ws", recv_ns=recv,
                         raw=raw, exch_ts_ms=exch, **extra),
         )
+        if self.on_frame is not None and stream_key != CONTROL_STREAM:
+            try:
+                self.on_frame(obj["stream"], obj, recv)
+            except Exception:  # a validator bug must never stop recording
+                log.exception("%s/%s on_frame hook failed", self.venue, self.name)
 
     async def _pinger(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         while not ws.closed:
@@ -201,10 +210,10 @@ class WsConnection:
                         venue=self.venue, stream=stream_dir(s), recv_ns=subscribed_ns,
                         gap_start_ns=gap[0], gap_end_ns=gap[1], reason="reconnect",
                         conn=self.name, conn_id=self.conn_id))
-                    if self.on_reconnect is not None:
-                        t = asyncio.create_task(self.on_reconnect())
-                        self._bg.add(t)
-                        t.add_done_callback(self._bg.discard)
+                if self.on_subscribed is not None:
+                    t = asyncio.create_task(self.on_subscribed(gap is not None))
+                    self._bg.add(t)
+                    t.add_done_callback(self._bg.discard)
                 log.info("%s/%s connected (conn_id=%d) %s", self.venue, self.name, self.conn_id, self.url)
                 pinger = asyncio.create_task(self._pinger(ws))
                 while True:

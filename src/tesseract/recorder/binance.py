@@ -82,12 +82,16 @@ class Binance:
             session, venue=VENUE, name="public", url=cfg.ws_public_url, streams=cfg.ws_public_streams,
             subscribe_messages=lambda: subscribe(cfg.ws_public_streams, 1),
             backoff=Backoff(backoff.base_s, backoff.cap_s),
-            # The diff stream has a hole: take a fresh snapshot right away so the book can be rebuilt.
-            on_reconnect=self.snapshot_depth, **common)
+            on_subscribed=self._on_public_subscribed, **common)
         self.ws_market = WsConnection(
             session, venue=VENUE, name="market", url=cfg.ws_market_url, streams=cfg.ws_market_streams,
             subscribe_messages=lambda: subscribe(cfg.ws_market_streams, 2),
             backoff=Backoff(backoff.base_s, backoff.cap_s), **common)
+
+    async def _on_public_subscribed(self, is_reconnect: bool) -> None:
+        # The diff stream has a hole after a reconnect: take a fresh snapshot right away.
+        if is_reconnect:
+            await self.snapshot_depth()
 
     def _w(self, name: str) -> int:
         return int(self.cfg.weights[name])

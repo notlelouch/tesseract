@@ -103,10 +103,11 @@ async def run_until_reconnected(tmp_path, venue: FakeVenue, stale_timeout_s=5.0)
     await server.start_server()
     session = aiohttp.ClientSession()
     writer = JsonlWriter(tmp_path, fsync=False)
-    reconnect_calls = []
+    subscribed_calls = []
+    frames_seen = []
 
-    async def on_reconnect():
-        reconnect_calls.append(1)
+    async def on_subscribed(is_reconnect):
+        subscribed_calls.append(is_reconnect)
 
     conn = WsConnection(
         session, venue="mudrex", name="linear", url=str(server.make_url("/ws")), streams=STREAMS,
@@ -114,7 +115,8 @@ async def run_until_reconnected(tmp_path, venue: FakeVenue, stale_timeout_s=5.0)
                                     {"id": 2, "method": "SUBSCRIBE", "params": ["ticker@1s"], "assets": ["btcusdt"]}],
         exch_ts=lambda obj: None, writer=writer, latency=LatencyLog(writer),
         connect_limiter=WindowLimiter(10, 60), backoff=Backoff(1.0, 60.0),
-        ping_interval_s=20, stale_timeout_s=stale_timeout_s, on_reconnect=on_reconnect, sleep=fast_sleep)
+        ping_interval_s=20, stale_timeout_s=stale_timeout_s, on_subscribed=on_subscribed,
+        on_frame=lambda stream, obj, recv: frames_seen.append(stream), sleep=fast_sleep)
     task = asyncio.create_task(conn.run())
     try:
         await asyncio.wait_for(venue.second_connection.wait(), timeout=10)
@@ -125,7 +127,7 @@ async def run_until_reconnected(tmp_path, venue: FakeVenue, stale_timeout_s=5.0)
         await session.close()
         await server.close()
     writer.close()
-    return conn, reconnect_calls
+    return conn, subscribed_calls, frames_seen
 
 
 def rows(tmp_path, *parts):
@@ -138,12 +140,12 @@ def rows(tmp_path, *parts):
 async def test_reconnect_resubscribes_and_writes_gap_markers(tmp_path):
     frames = fixture_lines("mudrex_ws_frames.jsonl")
     venue = FakeVenue(frames)
-    conn, reconnect_calls = await run_until_reconnected(tmp_path, venue)
+    conn, subscribed_calls, frames_seen = await run_until_reconnected(tmp_path, venue)
 
     # Re-subscribed with the same messages on the new connection.
     assert venue.connections == 2
     assert venue.subscribes[0] == venue.subscribes[1]
-    assert reconnect_calls == [1]
+    assert subscribed_calls == [False, True]  # fires on first connect and on reconnect
 
     for s in STREAMS:
         recs = rows(tmp_path, "raw", "mudrex", stream_dir(s))
@@ -158,6 +160,10 @@ async def test_reconnect_resubscribes_and_writes_gap_markers(tmp_path):
         conn1_data = [r for r in rows(tmp_path, "raw", "mudrex") if r.get("conn_id") == 1 and r["type"] == "data"]
         assert gap["gap_start_ns"] == max(r["recv_ns"] for r in conn1_data)
 
+    # on_frame sees stream frames only (not subscribe acks), once per frame per connection.
+    stream_frames = [f for f in frames if '"stream"' in f]
+    assert len(frames_seen) == 2 * len(stream_frames)
+
     # Every recorded frame is stored verbatim; frames arrived on both connections.
     data = [r for r in rows(tmp_path, "raw", "mudrex") if r["type"] == "data"]
     assert sorted(r["raw"] for r in data) == sorted(frames * 2)
@@ -169,7 +175,7 @@ async def test_reconnect_resubscribes_and_writes_gap_markers(tmp_path):
 
 async def test_stale_connection_is_recycled_with_gap(tmp_path):
     venue = FakeVenue([], drop_first=False, silent=True)
-    conn, _ = await run_until_reconnected(tmp_path, venue, stale_timeout_s=0.2)
+    conn, _, _ = await run_until_reconnected(tmp_path, venue, stale_timeout_s=0.2)
     lat = rows(tmp_path, "latency")
     assert any(r["event"] == "ws_disconnect" and r["reason"].startswith("stale") for r in lat)
     gaps = [r for r in rows(tmp_path, "raw", "mudrex", "ws_ticker_1s") if r["type"] == "gap"]
