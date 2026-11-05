@@ -20,6 +20,7 @@ make run                       # tesseract-record --config config.toml (runs unt
 make run-dev DURATION=3600     # stops itself after DURATION seconds
 make run CONFIG=config.dev.toml
 make summary                   # records, MB/hour per stream, REST latency percentiles
+make parse                     # data/raw -> data/typed + data/reports/typed/<day>.json (DATA=dir to override)
 ```
 
 - `config.toml` is the full config with both venues enabled.
@@ -107,6 +108,51 @@ On macOS, `time.time_ns()` has microsecond resolution, so `recv_ns` ends in `000
   data.
 - On reopen, a torn last line (left by a crash) is terminated so later lines stay parseable.
 - Delivery is at-least-once: a write that partly succeeds and is then retried can duplicate lines.
+
+## Typed parser (`tesseract.parser`)
+
+`make parse` (or `tesseract-parse --raw data/raw --out data/typed --reports data/reports/typed`)
+turns each `data/raw/<venue>/<stream>/<day>.jsonl` into `data/typed/<venue>/<stream>/<day>.jsonl`,
+one typed record per raw record (UTF-8, one JSON object per line). Raw files are opened read-only.
+Output paths that overlap the raw root are refused. Typed files are rebuilt whole on every run
+(written to a temp file, then renamed into place).
+
+Typed record: `v`, `type`, `venue`, `stream`, `recv_ns`, `raw_line` (line in the raw file), and for
+`data`: `exch_ts_ms`, `source`, `kind` plus parsed fields:
+
+| kind | from | fields |
+|---|---|---|
+| `ticker` | Mudrex `ticker@1s` | `tickers[]`: `symbol`, `last_price`, `mark_price` |
+| `kline`, `mark_kline` | Mudrex WS klines | `symbol`, `interval`, `open_time_ms`, `open/high/low/close`, `volume` (kline only) |
+| `kline_batch`, `mark_kline_batch` | Mudrex REST | `success`, `candles[]` with `asset`, `open_time_ms`, OHLC(V) |
+| `control` | `ws_control` (both) | `id`, `method`, `result`, `error` |
+| `depth_diff` | Binance depth WS | `symbol`, `pair` (`ps`), `event_time_ms`, `transaction_time_ms`, `first_update_id`/`final_update_id`/`prev_final_update_id`, `bids`, `asks`, `st` |
+| `mark_price` | Binance markPrice WS | `mark_price`, `index_price`, `estimated_settle_price`, `funding_rate`, `next_funding_time_ms`, `ap`, `st` |
+| `depth_snapshot` | Binance `rest_depth` | `last_update_id`, `event_time_ms`, `transaction_time_ms`, `bids`, `asks` |
+| `premium_index`, `funding_rate_history`, `kline_batch` | Binance REST | documented fields, snake_cased |
+
+- Prices, sizes, rates and volumes are strings holding the exact decimal text received; Mudrex
+  JSON numbers are read as `Decimal`, never `float`. Book levels are `[price, size]` under
+  `bids`/`asks`. Fields not mapped to a typed field go to `extra` unchanged.
+- `exch_ts_ms` is `null` when the venue has no exchange time (all of Mudrex). It is never 0.
+- `gap`, `depth_synced`, `session_start` and `error` records pass through with all their fields;
+  `gap` adds an integer `gap_ns`.
+- **Dedupe key: venue, stream, `recv_ns` and payload** (`raw` for data records, the whole record
+  otherwise). This removes the writer's at-least-once retry duplicates. `recv_ns` is in the key
+  because Mudrex payloads carry no timestamp, so identical text recurs legitimately. On
+  2026-11-05 a payload-only key would have dropped 44 real ticker updates in `data/raw`, plus 16
+  ticker updates and 6 reconnect subscribe acks in the sleep run. Such repeats are kept and
+  reported as `payload_repeats_kept`.
+- An unparseable line is logged as `file:line: error`, counted, listed in the day report and
+  skipped. The run continues and exits with status 1.
+- `data/reports/typed/<day>.json`: per stream `lines_in`, `records_out`, `duplicates_removed`,
+  `payload_repeats_kept`, `parse_failures`, and `gaps` with `count`, `total_ns`/`total_ms`
+  (sum) and `covered_ns`/`covered_ms` (union, overlaps counted once), split by reason. A gap
+  crossing UTC midnight is split between the two days and counted on each.
+- Not yet exercised by recorded data: the Binance `mark_price`, `premium_index`,
+  `funding_rate_history` and `kline_batch` parsers. No recorded payloads for them exist in the repo
+  (the premium-index fixture is synthetic). Their field types (`st`, `ap` included) are
+  taken from the docs and the live notes above, not verified.
 
 ## Endpoints used
 
