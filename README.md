@@ -23,8 +23,8 @@ make summary                   # records, MB/hour per stream, REST latency perce
 ```
 
 - `config.toml` is the full config with both venues enabled.
-- `config.dev.toml` is the same, but with Binance disabled. Binance is unreachable from the dev
-  network (see "Known doc mismatches and findings").
+- `config.dev.toml` is the same, but with Binance disabled, for networks where Binance is blocked
+  (see "Known doc mismatches and findings").
 
 ## File layout
 
@@ -46,7 +46,7 @@ Streams currently produced:
 | binance | `ws_btcusdt_depth_100ms` | WS diff depth |
 | binance | `ws_btcusdt_markprice_1s` | WS mark price |
 | binance | `ws_control` | WS subscribe acks and errors |
-| binance | `rest_depth` | `GET /fapi/v1/depth?limit=1000` every 60s, plus immediately after any depth-WS reconnect |
+| binance | `rest_depth` | `GET /fapi/v1/depth?limit=1000` every 60s, plus immediately after every depth-WS connect (first and reconnects) and after a failed sequence check |
 | binance | `rest_premium_index` | `GET /fapi/v1/premiumIndex` every 10s |
 | binance | `rest_funding_rate` | `GET /fapi/v1/fundingRate` every 1h |
 | binance | `rest_klines` | `GET /fapi/v1/klines` 1m, last 5, every 60s (cross-check) |
@@ -63,7 +63,8 @@ receive time in ns since the epoch, UTC).
 |---|---|---|
 | `data` | one WS frame or one REST response | `source` (`ws`/`rest`), `exch_ts_ms` (exchange time if the venue provides one, else `null`), `raw` (payload text exactly as received). WS: `conn`, `conn_id`. REST: `req_start_ns`, `request` {url, params}, `status`, `used_weight_1m` (Binance) |
 | `session_start` | first successful connect of this recorder process for this stream | `conn`, `conn_id`, `url` |
-| `gap` | written to every stream of a connection after a reconnect | `gap_start_ns` (last frame received before the drop, or the drop time if none), `gap_end_ns` (re-subscribe sent), `gap_ms`, `reason` |
+| `gap` | `reason: reconnect` is written to every stream of a connection after a reconnect. Binance depth only: `reason: sequence_break` (a `pu` mismatch) or `snapshot_stale` (snapshot older than the buffered diffs) | `gap_start_ns`, `gap_end_ns`, `gap_ms`, `reason`. Reconnect: start is the last frame before the drop (or the drop time), end is when re-subscribe was sent. Depth reasons add `expected_pu`/`got_pu`/`U`/`u` or `last_update_id`/`first_U`/`first_u` |
+| `depth_synced` | Binance depth only: the recorded diff stream can rebuild the book from this point | `last_update_id`, `snapshot_recv_ns`, `first_U`, `first_u`, `first_recv_ns` (first diff to apply), `applied`, `dropped` |
 | `error` | a REST poll failed after all retries | `status`, `error`, `attempts`, `raw` (body if any) |
 
 Where `exch_ts_ms` comes from:
@@ -80,8 +81,20 @@ For replay:
 
 - Restarts show up as a new `session_start`.
 - Disconnects within a run show up as `gap` records.
-- A Binance depth gap means the local book must be rebuilt from the next `rest_depth` snapshot.
-  The recorder takes one immediately after reconnecting.
+- Binance depth: start the book from the `rest_depth` record whose `lastUpdateId` matches the
+  latest `depth_synced`, then apply diffs from `first_U`/`first_u` onward. Any `gap` record
+  invalidates the book until the next `depth_synced`.
+- The recorder checks the diff sequence while it records, following Binance's documented USD-M
+  procedure:
+  - On every WS connect it takes a snapshot right away and buffers diff IDs (the raw frames are
+    still written immediately).
+  - It drops diffs with `u < lastUpdateId`.
+  - The first diff it applies must satisfy `U <= lastUpdateId <= u`.
+  - After that, each diff's `pu` must equal the previous diff's `u`. Any failure writes a `gap` and
+    triggers a new snapshot.
+  - It tracks IDs only. Rebuilding price levels stays a separate replay step.
+- Live check (2026-11-05): `depth_synced` was written 2.3s after the first subscribe, with no
+  sequence breaks over 1,441 frames.
 
 On macOS, `time.time_ns()` has microsecond resolution, so `recv_ns` ends in `000`.
 
@@ -175,31 +188,44 @@ and https://docs.trade.mudrex.com/docs/websocket-streams.md (pages updated 2026-
 
 ### Binance
 
-1. **Binance is unreachable from the dev network.**
-   - `fapi.binance.com`, `fstream.binance.com` and `developers.binance.com` resolve to an ISP
-     block address via the system resolver, and connections time out.
-   - **No attempt was made to bypass this** (no alternate DNS, VPN or proxy). Whether and from
-     where to reach Binance is a compliance decision.
-   - As a result, no live Binance payload was recorded, the Binance client is tested only against
-     synthetic fixtures, and the official Binance docs could not be read directly.
-2. **WS endpoint split (differs from the brief).**
+1. **Reachability depends on the network.**
+   - Earlier on 2026-11-05, `fapi.binance.com`, `fstream.binance.com` and
+     `developers.binance.com` resolved to an ISP block address and timed out.
+   - Later that day, on the system resolver, they resolved normally and every endpoint worked.
+   - **No attempt was ever made to bypass the block** (no alternate DNS, VPN or proxy). Whether,
+     and from where, to record Binance is a compliance decision.
+2. **Book-sync rule: USD-M differs from spot.**
+   - The official USD-M page "How to manage a local order book correctly" (read 2026-11-06)
+     requires the first processed event to satisfy **`U <= lastUpdateId AND u >= lastUpdateId`**.
+   - That is not the spot form `U <= lastUpdateId+1 <= u`. The recorder implements the documented
+     USD-M rule.
+   - The same page drops events with `u < lastUpdateId` and requires `pu` to equal the previous
+     `u`.
+   - It also names `wss://fstream.binance.com/public/stream` for depth, which confirms the split
+     below.
+3. **WS endpoint split (differs from the brief).**
    - Per secondary sources (see below), Binance split USD-M market streams on 2026-03-06:
      `wss://fstream.binance.com/public` for high-frequency data (`depth`, `bookTicker`) and
      `wss://fstream.binance.com/market` for the rest (`markPrice`, `kline`, `aggTrade`, …).
    - The **legacy `wss://fstream.binance.com/ws` was retired on 2026-04-23**.
    - The recorder uses `/public/stream` for `btcusdt@depth@100ms` and `/market/stream` for
      `btcusdt@markPrice@1s`.
-   - Both URLs are in config. **Verify against the official "WebSocket System Upgrade Notice
-     (2026-03-06)" before production.**
+   - Both URLs are in config. Both connected and streamed live on 2026-11-05. The `/public` path
+     is also named on the official order-book page.
    - Sources:
      - [sieblyio/binance v3.5.0](https://github.com/sieblyio/binance/releases/tag/v3.5.0). The
        v3.6.11 package source routes `depth`/`bookTicker` to `/public/stream` and all other
        streams to `/market/stream`.
      - [ccxt/go-binance#809](https://github.com/ccxt/go-binance/pull/809).
      - [Binance derivatives change log](https://developers.binance.com/docs/derivatives/change-log).
-3. **Mark price stream field `ap`.** A 2026-03-16 change log entry reportedly adds a moving-average
-   field `ap` to mark price streams. This does not affect raw recording.
-4. **Unverified numbers.** These values come from prior knowledge, not from docs read today: REST
+4. **Extra fields seen live.**
+   - Mark price frames carry `ap` (per a 2026-03-16 change log entry) and `st`.
+   - Depth frames carry `ps` and `st`, which are not in the brief.
+   - Raw recording keeps them all.
+5. **Depth volume.** `btcusdt@depth@100ms` produced about 9.6 frames/s, roughly 90 MB/hour or
+   2 GB/day uncompressed. Mudrex BTC is about 1 MB/hour.
+6. **Unverified numbers.** These values come from prior knowledge, not from docs read today: REST
    weight limit 2400/min, depth weight 20 at `limit=1000`, the fundingRate 500/5min/IP limit, and
    the WS connection-rate and ping/pong rules. They are in config, set conservatively, and must be
-   confirmed against the official docs.
+   confirmed against the official docs. Live `X-MBX-USED-WEIGHT-1M` readings of 22–24 per minute
+   are consistent with a depth weight of 20.

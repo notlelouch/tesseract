@@ -1,4 +1,4 @@
-# Dev config: identical to config.toml except Binance is disabled (unreachable from the dev network).
+# Dev config: identical to config.toml except Binance is disabled (for networks where Binance is blocked).
 
 [general]
 data_dir = "data"
@@ -39,7 +39,7 @@ ws_max_subscriptions = 15           # documented: 15 per connection
 
 # ---------------------------------------------------------------- Binance USD-M
 [binance]
-enabled = false             # Binance hosts are DNS-blocked on the dev network (see README)
+enabled = false             # Binance is blocked on some networks (see README)
 rest_base = "https://fapi.binance.com"
 symbol = "BTCUSDT"
 
