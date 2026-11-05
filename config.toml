@@ -53,6 +53,7 @@ ws_ping_interval_s = 30             # client-side ping; server also pings and ai
 ws_stale_timeout_s = 30
 
 depth_snapshot_interval_s = 60
+depth_resync_delay_s = 1.0         # wait before re-snapshotting after a failed sequence check
 depth_limit = 1000
 premium_index_interval_s = 10
 funding_rate_interval_s = 3600

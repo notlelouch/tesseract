@@ -70,6 +70,7 @@ class BinanceConfig:
     ws_ping_interval_s: float
     ws_stale_timeout_s: float
     depth_snapshot_interval_s: float
+    depth_resync_delay_s: float
     depth_limit: int
     premium_index_interval_s: float
     funding_rate_interval_s: float
