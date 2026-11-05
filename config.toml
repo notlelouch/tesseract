@@ -1,0 +1,76 @@
+# Tesseract v1 recorder config. No secrets: every endpoint here is public market data.
+
+[general]
+data_dir = "data"
+log_level = "INFO"
+flush_interval_s = 1.0          # writer flushes buffers to disk on this timer (and on shutdown)
+fsync = true                    # fsync after each timed flush
+max_buffer_records = 500000     # if disk writes keep failing past this, the recorder stops loudly
+http_timeout_s = 10.0           # per-request timeout
+http_max_retries = 3            # retries for 429/418/5xx/timeouts (not for other 4xx)
+user_agent = "tesseract-recorder/0.1"
+
+[backoff]
+base_s = 1.0
+cap_s = 60.0
+
+# ---------------------------------------------------------------- Mudrex
+[mudrex]
+enabled = true
+rest_base = "https://trade.mudrex.com/fapi/v1/price"
+ws_url = "wss://trade.mudrex.com/fapi/v1/price/ws/linear"
+
+rest_assets = ["BTC/USDT"]          # REST `assets` param format (max 25 per call)
+ws_symbols = ["btcusdt"]            # WS stream symbol format
+kline_interval = "1m"               # WS: 1s|1m ; REST `aggregation`: 1m|3t|5t|...
+ticker_stream = "ticker@1s"         # ticker@1s or ticker@5s
+
+rest_poll_interval_s = 60           # GET /kline and /mark-kline cadence
+rest_lookback_s = 300               # each poll requests [now - lookback, now]
+
+ws_ping_interval_s = 20             # WebSocket protocol PING frames (server closes after 40s idle)
+ws_stale_timeout_s = 60             # reconnect if no message at all for this long
+
+rest_rate_limit = 300               # documented: 300 req/min/IP
+rest_rate_window_s = 60
+ws_connect_limit = 10               # documented: 10 new connections/min/IP
+ws_connect_window_s = 60
+ws_max_subscriptions = 15           # documented: 15 per connection
+
+# ---------------------------------------------------------------- Binance USD-M
+[binance]
+enabled = true
+rest_base = "https://fapi.binance.com"
+symbol = "BTCUSDT"
+
+# Binance split USD-M WS endpoints (legacy wss://fstream.binance.com/ws retired 2026-04-23).
+# depth/bookTicker -> /public ; markPrice/kline/ticker/aggTrade -> /market. See README.
+ws_public_url = "wss://fstream.binance.com/public/stream"
+ws_public_streams = ["btcusdt@depth@100ms"]
+ws_market_url = "wss://fstream.binance.com/market/stream"
+ws_market_streams = ["btcusdt@markPrice@1s"]
+ws_ping_interval_s = 30             # client-side ping; server also pings and aiohttp auto-pongs
+ws_stale_timeout_s = 30
+
+depth_snapshot_interval_s = 60
+depth_limit = 1000
+premium_index_interval_s = 10
+funding_rate_interval_s = 3600
+funding_rate_limit = 100
+klines_interval = "1m"
+klines_poll_interval_s = 60
+klines_limit = 5
+
+# Request weights (verify against docs; see README "known doc mismatches").
+weight_limit = 1200                 # self-imposed: half of the 2400/min IP limit
+weight_window_s = 60
+funding_rate_ip_limit = 500         # fundingRate shares a 500 req / 5 min / IP limit
+funding_rate_ip_window_s = 300
+ws_connect_limit = 5
+ws_connect_window_s = 1
+
+[binance.weights]
+depth = 20                          # limit=1000
+premiumIndex = 1
+fundingRate = 1
+klines = 1                          # limit < 100
