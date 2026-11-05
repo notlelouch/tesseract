@@ -1,0 +1,9 @@
+{"method":"SUBSCRIBE","id":1,"result":"success"}
+{"method":"SUBSCRIBE","id":2,"result":"success"}
+{"stream":"ticker@1s","data":[{"s":"btcusdt","p":75950,"mp":75953.9}]}
+{"stream":"ticker@1s","data":[{"s":"btcusdt","p":75961.7,"mp":75953.9}]}
+{"stream":"ticker@1s","data":[{"s":"btcusdt","p":75930.4,"mp":75971.49}]}
+{"stream":"ticker@1s","data":[{"s":"btcusdt","p":75945.8,"mp":75950.95}]}
+{"stream":"ticker@1s","data":[{"s":"btcusdt","p":75926,"mp":75960.65}]}
+{"stream":"kline@1m@btcusdt","data":{"s":"btcusdt","t":1793894220,"o":76098.2,"h":76098.2,"l":75883.3,"c":76008.6,"v":334.714}}
+{"stream":"markKline@1m@btcusdt","data":{"s":"btcusdt","t":1793894220,"o":76092.9,"h":76092.9,"l":75904.32,"c":76007.96}}
