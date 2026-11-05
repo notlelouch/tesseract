@@ -1,0 +1,20 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Recorded market data and run logs (never committed)
+data/
+data_*/
+logs/
+*.jsonl
+!tests/fixtures/*.jsonl
+
+# Secrets (the recorder needs none; belt and braces)
+.env
+.env.*
+*.pem
+*.key
+secrets*
