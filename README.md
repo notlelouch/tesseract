@@ -154,6 +154,30 @@ Typed record: `v`, `type`, `venue`, `stream`, `recv_ns`, `raw_line` (line in the
   (the premium-index fixture is synthetic). Their field types (`st`, `ap` included) are
   taken from the docs and the live notes above, not verified.
 
+## Paper fill model (`tesseract.paper`)
+
+Simulated market-order fills from recorded data. Pure logic: no network, no orders sent.
+Settings are in `[paper]` in `config.toml` and are read as exact decimals.
+
+- **Book**: `paper.book.replay` rebuilds Binance books only inside `depth_synced` segments (rules
+  under "For replay" above). Each applied diff is one state, timed by its event time `E`.
+- **Latency**: a decision at `t` targets `t + latency_ms` (default 250). It fills against the
+  first state at or after the target, if a synced segment covers the target.
+- **Walk**: buys lift asks from the lowest price, sells hit bids from the highest. Size beyond
+  the recorded depth is kept as `unfilled_qty` and is never assumed to fill.
+- **Fallback**: with no covering book (before sync, between segments, after the data ends), the
+  order fills in full at `reference * (1 ± (fallback_spread_bps/2 + fallback_slippage_bps)/10000)`
+  with `source: "assumed"`. A `Fill` with source `book` must carry a `book_update_id`, and an
+  assumed one must not. `summarize` reports each source separately.
+- **Fill fields**: decision and fill time, reference price, fill price (VWAP), filled and
+  unfilled qty, notional, fee (`taker_fee` × notional), `slippage_bps` (positive = worse than
+  reference), source, `book_update_id` and `levels_consumed`.
+- **Arithmetic**: sums and products use a context that raises on rounding. Only the VWAP and
+  the bps divisions are rounded (half-even, 28 significant digits).
+- **Reference price**: comes with the order. `paper.klines.KlineSeries.reference_at(t)` gives
+  the close of the Mudrex 1m candle that closed most recently at or before `t`, from REST
+  batches received after the candle closed. It raises `NoReference` if that candle is missing.
+
 ## Endpoints used
 
 | venue | endpoint | params |
