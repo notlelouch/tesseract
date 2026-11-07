@@ -9,27 +9,30 @@ from tesseract.config import load_config
 from tesseract.recorder.binance import Binance
 from tesseract.recorder.http import RestResult
 from tesseract.recorder.latency import LatencyLog
-from tesseract.recorder.records import now_ns
 from tesseract.recorder.writer import JsonlWriter
 
-from conftest import fixture_lines
+from conftest import FixedNsClock, fixture_lines
 
 ROOT = Path(__file__).parent.parent
 DEPTH = "btcusdt@depth@100ms"
 
 
 def load():
-    snaps, frames = [], []
+    snaps, frames, start = [], [], None
     for line in fixture_lines("binance_depth_session.jsonl"):
         rec = json.loads(line)
+        t = rec.get("req_start_ns") or rec["recv_ns"]
+        start = t if start is None else min(start, t)
         if rec["stream"] == "rest_depth":
             snaps.append(rec["raw"])
         else:
             frames.append((json.loads(rec["raw"]), rec["recv_ns"]))
-    return snaps, frames
+    return snaps, frames, start
 
 
-SNAPS, FRAMES = load()
+# SESSION_START_NS: earliest timestamp in the recorded session (2026-11-05 22:24 UTC); the
+# injected clock starts there.
+SNAPS, FRAMES, SESSION_START_NS = load()
 STALE, GOOD = SNAPS
 GOOD_ID = json.loads(GOOD)["lastUpdateId"]
 
@@ -38,17 +41,22 @@ def make(tmp_path, responses):
     cfg = load_config(ROOT / "config.toml")
     cfg = dataclasses.replace(cfg, binance=dataclasses.replace(cfg.binance, depth_resync_delay_s=0))
     writer = JsonlWriter(tmp_path, fsync=False)
-    b = Binance(cfg.binance, cfg.backoff, None, writer, LatencyLog(writer), timeout_s=10, max_retries=0)
+    # Pinned to the recorded session so every timestamp written lands on the fixtures' UTC day,
+    # whatever date the tests run on.
+    clock = FixedNsClock(SESSION_START_NS)
+    b = Binance(cfg.binance, cfg.backoff, None, writer, LatencyLog(writer), timeout_s=10, max_retries=0,
+                clock=clock)
     calls = []
 
     async def fake_get(endpoint, path, params, **kw):
+        # Stamps start/end from the injected clock, as the real RestClient does.
         calls.append(endpoint)
-        start = now_ns()
+        start = clock()
         if not responses:  # out of scripted snapshots: behave like a failed request
             return RestResult(endpoint, "https://fapi.binance.com" + path, params, 503, "",
-                              start, start + 1_000_000, 1)
+                              start, clock(), 1)
         return RestResult(endpoint, "https://fapi.binance.com" + path, params, 200,
-                          responses.pop(0), start, start + 1_000_000, 1)
+                          responses.pop(0), start, clock(), 1)
 
     b.rest.get = fake_get
     return b, writer, calls
@@ -115,7 +123,7 @@ async def test_missing_frame_writes_sequence_gap_and_resnapshots(tmp_path):
 
 async def test_snapshot_requested_before_subscribe_is_not_fed(tmp_path):
     b, writer, calls = make(tmp_path, [GOOD])
-    b._sync_epoch_ns = now_ns() + 10**12  # subscription "after" this request started
+    b._sync_epoch_ns = b.clock() + 10**12  # subscription "after" this request started
     await b.snapshot_depth()
     assert b.depth_sync.state == "waiting_snapshot"
     assert depth_records(tmp_path, writer) == []

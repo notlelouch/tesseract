@@ -28,6 +28,20 @@ class FakeClock:
         self.t += s
 
 
+class FixedNsClock:
+    """Wall clock (ns) pinned to a fixed instant; each read advances it by `step_ns`, so
+    start < end and ordering checks behave, but the values never depend on today's date."""
+
+    def __init__(self, t0_ns: int, step_ns: int = 1_000_000):
+        self.t = t0_ns
+        self.step = step_ns
+
+    def __call__(self) -> int:
+        t = self.t
+        self.t += self.step
+        return t
+
+
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock()
