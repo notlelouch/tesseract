@@ -5,9 +5,13 @@ as received. Parsing into typed fields happens in a separate step, not here."""
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 SCHEMA_VERSION = 1
+
+# Wall clock in ns since the epoch (UTC). Injectable so tests can pin recorded timestamps.
+Clock = Callable[[], int]
 
 
 def now_ns() -> int:

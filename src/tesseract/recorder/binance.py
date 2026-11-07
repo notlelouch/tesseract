@@ -18,7 +18,7 @@ from .depth_sync import Break, DepthSync, Diff, NeedSnapshot, Synced
 from .http import RestClient, RestResult
 from .latency import LatencyLog
 from .ratelimit import WindowLimiter
-from .records import data_record, event_record, gap_record, now_ns
+from .records import Clock, data_record, event_record, gap_record, now_ns
 from .ws import WsConnection, stream_dir
 from .writer import JsonlWriter
 
@@ -69,8 +69,12 @@ def subscribe(streams: list[str], req_id: int) -> list[dict[str, Any]]:
 
 class Binance:
     def __init__(self, cfg: BinanceConfig, backoff: BackoffConfig, session: aiohttp.ClientSession,
-                 writer: JsonlWriter, latency: LatencyLog, *, timeout_s: float, max_retries: int):
+                 writer: JsonlWriter, latency: LatencyLog, *, timeout_s: float, max_retries: int,
+                 clock: Clock = now_ns):
         self.cfg = cfg
+        # Every timestamp this client writes (REST start/end incl. snapshot receive time, WS
+        # frames, sync epoch, depth_synced / gap records) comes from this one clock.
+        self.clock = clock
         self.writer = writer
         # Diff-depth sequence check (Binance USD-M local-book procedure). Raw frames are
         # written as received regardless; this only adds depth_synced / gap verdicts.
@@ -85,11 +89,11 @@ class Binance:
             session, venue=VENUE, base_url=cfg.rest_base, latency=latency,
             limiter=WindowLimiter(cfg.weight_limit, cfg.weight_window_s, name="binance-weight"),
             timeout_s=timeout_s, max_retries=max_retries,
-            backoff_base_s=backoff.base_s, backoff_cap_s=backoff.cap_s)
+            backoff_base_s=backoff.base_s, backoff_cap_s=backoff.cap_s, clock=clock)
         connect_limiter = WindowLimiter(cfg.ws_connect_limit, cfg.ws_connect_window_s, name="binance-ws")
         common = dict(writer=writer, latency=latency, connect_limiter=connect_limiter,
                       ping_interval_s=cfg.ws_ping_interval_s, stale_timeout_s=cfg.ws_stale_timeout_s,
-                      connect_timeout_s=timeout_s, exch_ts=ws_exch_ts)
+                      connect_timeout_s=timeout_s, exch_ts=ws_exch_ts, clock=clock)
         self.ws_public = WsConnection(
             session, venue=VENUE, name="public", url=cfg.ws_public_url, streams=cfg.ws_public_streams,
             subscribe_messages=lambda: subscribe(cfg.ws_public_streams, 1),
@@ -104,7 +108,7 @@ class Binance:
     async def _on_public_subscribed(self, is_reconnect: bool) -> None:
         # First connect and every reconnect: diffs are buffered (as ids) from now on, and a
         # snapshot taken right away lets the recorded stream rebuild the book from the start.
-        self._sync_epoch_ns = now_ns()
+        self._sync_epoch_ns = self.clock()
         self.depth_sync.reset()
         await self.snapshot_depth()
 
@@ -122,7 +126,7 @@ class Binance:
         for e in events:
             if isinstance(e, Synced):
                 self.writer.write(key, event_record(
-                    type="depth_synced", venue=VENUE, stream=name, recv_ns=now_ns(),
+                    type="depth_synced", venue=VENUE, stream=name, recv_ns=self.clock(),
                     last_update_id=e.last_update_id, snapshot_recv_ns=e.snapshot_recv_ns,
                     first_U=e.first.U, first_u=e.first.u, first_recv_ns=e.first.recv_ns,
                     applied=e.applied, dropped=e.dropped))
@@ -130,7 +134,7 @@ class Binance:
                          e.last_update_id, e.dropped)
             elif isinstance(e, Break):
                 self.writer.write(key, gap_record(
-                    venue=VENUE, stream=name, recv_ns=now_ns(), gap_start_ns=e.gap_start_ns,
+                    venue=VENUE, stream=name, recv_ns=self.clock(), gap_start_ns=e.gap_start_ns,
                     gap_end_ns=e.gap_end_ns, reason=e.kind, **e.detail))
                 log.warning("binance depth %s: %s", e.kind, e.detail)
             elif isinstance(e, NeedSnapshot):

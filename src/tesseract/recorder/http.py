@@ -18,7 +18,7 @@ import aiohttp
 from .backoff import Backoff
 from .latency import LatencyLog
 from .ratelimit import WindowLimiter, parse_retry_after
-from .records import now_ns
+from .records import Clock, now_ns
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class RestClient:
         backoff_base_s: float,
         backoff_cap_s: float,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Clock = now_ns,
     ):
         self.session = session
         self.venue = venue
@@ -67,6 +68,7 @@ class RestClient:
         self.max_retries = max_retries
         self._backoff_args = (backoff_base_s, backoff_cap_s)
         self._sleep = sleep
+        self._clock = clock
 
     async def get(
         self,
@@ -85,7 +87,7 @@ class RestClient:
             await self.limiter.acquire(weight)
             for lim in extra_limiters:
                 await lim.acquire(1)
-            start = now_ns()
+            start = self._clock()
             status: int | None = None
             text: str | None = None
             error: str | None = None
@@ -101,7 +103,7 @@ class RestClient:
                 error = "timeout"
             except aiohttp.ClientError as e:
                 error = f"{type(e).__name__}: {e}"
-            end = now_ns()
+            end = self._clock()
             self.latency.rest(
                 venue=self.venue, endpoint=endpoint, start_ns=start, end_ns=end,
                 status=status, attempt=attempt, error=error, used_weight=used_weight,

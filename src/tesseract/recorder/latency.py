@@ -17,7 +17,8 @@ class LatencyLog:
 
     def _write(self, venue: str, rec: dict[str, Any]) -> None:
         rec = {"v": SCHEMA_VERSION, "venue": venue, **rec}
-        rec.setdefault("recv_ns", now_ns())
+        if "recv_ns" not in rec:
+            rec["recv_ns"] = now_ns()
         self._w.write(("latency", venue), rec)
 
     def rest(

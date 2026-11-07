@@ -25,7 +25,7 @@ import aiohttp
 from .backoff import Backoff
 from .latency import LatencyLog
 from .ratelimit import WindowLimiter
-from .records import data_record, event_record, gap_record, now_ns
+from .records import Clock, data_record, event_record, gap_record, now_ns
 from .writer import JsonlWriter
 
 log = logging.getLogger(__name__)
@@ -97,6 +97,7 @@ class WsConnection:
         on_subscribed: Callable[[bool], Awaitable[None]] | None = None,
         on_frame: Callable[[str, Any, int], None] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Clock = now_ns,
     ):
         self.session = session
         self.venue = venue
@@ -117,6 +118,7 @@ class WsConnection:
         # Called after each stream frame is written: (raw stream name, parsed JSON, recv_ns).
         self.on_frame = on_frame
         self._sleep = sleep
+        self._clock = clock
         self.gaps = GapTracker()
         self.conn_id = 0
         self.messages = 0
@@ -129,7 +131,7 @@ class WsConnection:
             self.writer.write(("raw", self.venue, stream_dir(s)), make(s))
 
     def _handle_frame(self, msg: aiohttp.WSMessage) -> None:
-        recv = now_ns()
+        recv = self._clock()
         self.gaps.on_message(recv)
         self.messages += 1
         extra: dict[str, Any] = {"conn": self.name, "conn_id": self.conn_id}
@@ -173,7 +175,7 @@ class WsConnection:
         while True:
             await self.connect_limiter.acquire(1)
             self.conn_id += 1
-            start = now_ns()
+            start = self._clock()
             try:
                 ws = await asyncio.wait_for(
                     self.session.ws_connect(self.url, autoping=True, max_msg_size=0),
@@ -182,22 +184,22 @@ class WsConnection:
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
                 err = f"{type(e).__name__}: {e}"
                 self.latency.ws_connect(venue=self.venue, conn=self.name, conn_id=self.conn_id,
-                                        start_ns=start, end_ns=now_ns(), ok=False, error=err)
-                self.gaps.on_disconnect(now_ns())
+                                        start_ns=start, end_ns=self._clock(), ok=False, error=err)
+                self.gaps.on_disconnect(self._clock())
                 delay = self.backoff.next_delay()
                 log.warning("%s/%s connect failed (%s); retry in %.1fs", self.venue, self.name, err, delay)
                 await self._sleep(delay)
                 continue
             self.latency.ws_connect(venue=self.venue, conn=self.name, conn_id=self.conn_id,
-                                    start_ns=start, end_ns=now_ns(), ok=True)
+                                    start_ns=start, end_ns=self._clock(), ok=True)
             reason = "unknown"
-            connected_at = now_ns()
+            connected_at = self._clock()
             msgs_before = self.messages
             pinger: asyncio.Task[None] | None = None
             try:
                 for sub in self.subscribe_messages():
                     await ws.send_str(json.dumps(sub))
-                subscribed_ns = now_ns()
+                subscribed_ns = self._clock()
                 gap = self.gaps.on_connected(subscribed_ns)
                 if gap is None:
                     self._write_stream_markers(lambda s: event_record(
@@ -242,7 +244,7 @@ class WsConnection:
             except (aiohttp.ClientError, ConnectionError, OSError) as e:
                 reason = f"{type(e).__name__}: {e}"
             finally:
-                down = now_ns()
+                down = self._clock()
                 if pinger is not None:
                     pinger.cancel()
                 if reason != "shutdown":
