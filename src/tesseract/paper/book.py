@@ -13,9 +13,18 @@ Each applied diff yields one BookState. Its time is the diff's Binance event tim
 exchange clock the order would meet. A snapshot alone is not a state: under the USD-M rule the
 book is only valid once the bridging diff is applied.
 
+Diff order: diffs are replayed in Binance sequence order, key (`u`, `E`): final update id
+first, exchange event time second. Within one stream `u` strictly increases and each diff's `pu`
+is the previous `u`, so this is the `pu`/`u` chain order. Local receive time (`recv_ns`) is wall
+clock and can step backward (NTP corrections of 30-64 ms were recorded), so it never orders diffs.
+Exact ties on (`u`, `E`) (a duplicated frame) keep their input order, which is the recorder's
+arrival order (file order); the sort is stable and reads no clock.
+
 Verdict records (`depth_synced`, `gap`) are ordered among themselves by their own `recv_ns` and
 matched to diffs by update id or by `gap_start_ns`, never by comparing a verdict's `recv_ns`
-with a diff's `recv_ns`.
+with a diff's `recv_ns`. The `gap` cut is the only rule that reads a diff's `recv_ns`: it compares
+it with `gap_start_ns`, which is on the same local clock. It decides where a segment ends, not the
+order in which diffs apply.
 
 Pure logic, no I/O. Prices and sizes are Decimal.
 """
@@ -76,14 +85,18 @@ def _verdicts(depth_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(v, key=lambda r: r["recv_ns"])  # stable: equal recv_ns keep file order
 
 
+def _sequence_key(d: dict[str, Any]) -> tuple[int, int]:
+    """Binance order of a diff: final update id `u`, then event time `E`. Never `recv_ns`."""
+    return d["final_update_id"], d["event_time_ms"]
+
+
 def replay(depth_records: Iterable[dict[str, Any]],
            snapshot_records: Iterable[dict[str, Any]]) -> Iterator[BookState]:
     """depth_records: typed records of the Binance depth WS stream (diffs, gap, depth_synced,
     session_start). snapshot_records: typed `rest_depth` records. Yields states segment by
     segment in time order."""
     depth_records = list(depth_records)
-    diffs = sorted((r for r in depth_records if r.get("kind") == "depth_diff"),
-                   key=lambda r: r["recv_ns"])
+    diffs = sorted((r for r in depth_records if r.get("kind") == "depth_diff"), key=_sequence_key)
     index = {(d["first_update_id"], d["final_update_id"]): i for i, d in enumerate(diffs)}
     verdicts = _verdicts(depth_records)
     wanted = {v["last_update_id"] for v in verdicts if v["type"] == "depth_synced"}

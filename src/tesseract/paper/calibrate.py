@@ -129,9 +129,10 @@ def segment_states(typed_root: Path) -> Iterator[BookState]:
         if produced:
             seg_no += 1
 
-    # Files are in arrival order, but recv_ns is wall clock and can step back a little; replay
-    # sorts by recv_ns, so each diff goes to the segment its recv_ns falls in, and a segment is
-    # replayed only once the stream is REORDER_SLACK_NS past its end.
+    # Files are in arrival order, but recv_ns is wall clock and can step back a little. Segment
+    # bounds (first_recv_ns, gap_start_ns) are on that clock, so each diff goes to the segment its
+    # recv_ns falls in, and a segment is replayed only once the stream is REORDER_SLACK_NS past its
+    # end. Within a segment, replay orders diffs by update id, not recv_ns.
     starts = [s.start_ns for s in segs]
     i = 0  # first segment not yet replayed
     for r in _records(typed_root, DEPTH_STREAM):
