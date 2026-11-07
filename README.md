@@ -198,10 +198,13 @@ make parse                                    # raw -> typed (data/ is never com
 - Only the aggregate summary is committed: `calibration/binance_fallback_summary.json`.
   Tests reproduce the method on the committed fixtures and check that config matches the summary.
 
-Known limitation: `paper.book.replay` orders diffs by `recv_ns`, which is wall-clock time. In
-the 2026-11-05..07 recording the clock stepped back 30–64 ms three times. Each step reorders
-two diffs, fails the `pu` check and ends that segment early, so replay yields about 957 of
-about 1964 synced minutes. Calibration uses what replay yields; the fix belongs in replay.
+Diff order: `paper.book.replay` orders diffs by Binance sequence (`u`, then event time `E`),
+never by `recv_ns`. `recv_ns` is wall-clock time; in the 2026-11-05..07 recording it stepped back
+30–64 ms three times. The committed summary was produced before this fix, when replay sorted by
+`recv_ns`: each step ended a segment early and replay yielded 957.0 synced minutes. On the same
+frozen data, replay now yields 1836.9 minutes (218 segments, each ending where the recorded chain
+breaks) and 1857 spread samples. The p90s still round up to the shipped config values (0.0133 and
+0), so config is unchanged.
 
 ## Endpoints used
 
