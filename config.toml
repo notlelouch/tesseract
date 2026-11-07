@@ -75,3 +75,15 @@ depth = 20                          # limit=1000
 premiumIndex = 1
 fundingRate = 1
 klines = 1                          # limit < 100
+
+# ---------------------------------------------------------------- Paper fill model
+# Read by tesseract.config.load_paper_config with exact decimals (not used by the recorder).
+[paper]
+# Mudrex futures base-tier (non-Alpha) taker fee, 0.05%, per https://mudrex.com/fee (checked
+# 2026-11-07). Volume tiers can lower it; 18% GST on fees is NOT included. Re-verify before use.
+taker_fee = 0.0005
+latency_ms = 250
+# Used only when no depth_synced Binance book covers the fill time; such fills are tagged
+# "assumed". UNCALIBRATED PLACEHOLDERS: no recorded Mudrex spread or depth exists yet.
+fallback_spread_bps = 2
+fallback_slippage_bps = 2

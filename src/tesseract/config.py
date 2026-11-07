@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from decimal import Decimal
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -163,3 +164,48 @@ def validate(cfg: Config) -> None:
         if b.depth_limit not in (5, 10, 20, 50, 100, 500, 1000):
             raise ConfigError("[binance] depth_limit must be one of 5,10,20,50,100,500,1000")
         _positive("binance", "depth_snapshot_interval_s", b.depth_snapshot_interval_s)
+
+
+# --------------------------------------------------------------------------- paper fill model
+
+
+@dataclass(frozen=True)
+class PaperConfig:
+    """[paper] section. Decimals are read from TOML as exact Decimal, never float."""
+
+    taker_fee: Decimal  # fraction of filled notional, e.g. 0.0005 = 0.05%
+    latency_ms: int  # decision -> fill delay
+    fallback_spread_bps: Decimal  # full quoted spread assumed when no book covers the fill time
+    fallback_slippage_bps: Decimal  # extra adverse move assumed on top of half the spread
+
+
+def load_paper_config(path: str | Path) -> PaperConfig:
+    with open(path, "rb") as f:
+        raw = tomllib.load(f, parse_float=Decimal)
+    if "paper" not in raw:
+        raise ConfigError("missing section [paper]")
+    p = raw["paper"]
+    known = {f.name for f in fields(PaperConfig)}
+    if set(p) - known:
+        raise ConfigError(f"[paper] unknown keys: {sorted(set(p) - known)}")
+    if known - set(p):
+        raise ConfigError(f"[paper] missing keys: {sorted(known - set(p))}")
+
+    def decimal(name: str) -> Decimal:
+        v = p[name]
+        if isinstance(v, bool) or not isinstance(v, (int, Decimal)):
+            raise ConfigError(f"[paper] {name} must be a number, got {v!r}")
+        d = Decimal(v)
+        if not d.is_finite() or d < 0:
+            raise ConfigError(f"[paper] {name} must be a finite number >= 0, got {v!r}")
+        return d
+
+    latency = p["latency_ms"]
+    if isinstance(latency, bool) or not isinstance(latency, int) or latency < 0:
+        raise ConfigError(f"[paper] latency_ms must be an integer >= 0, got {latency!r}")
+    cfg = PaperConfig(taker_fee=decimal("taker_fee"), latency_ms=latency,
+                      fallback_spread_bps=decimal("fallback_spread_bps"),
+                      fallback_slippage_bps=decimal("fallback_slippage_bps"))
+    if cfg.taker_fee >= 1:
+        raise ConfigError(f"[paper] taker_fee is a fraction (0.0005 = 0.05%), got {cfg.taker_fee}")
+    return cfg
