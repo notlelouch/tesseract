@@ -12,8 +12,10 @@ the Mudrex reference is exercised on the assumed path.
 """
 
 import asyncio
+import json
+import re
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -258,7 +260,8 @@ def test_paper_config_shipped_and_validated(tmp_path):
     text = (ROOT / "config.toml").read_text()
     for bad, match in ((text.replace("latency_ms = 250\n", ""), "missing"),
                        (text.replace("taker_fee = 0.0005", "taker_fee = 5"), "fraction"),
-                       (text.replace("fallback_slippage_bps = 2", "fallback_slippage_bps = -1"), ">= 0"),
+                       (re.sub(r"(?m)^fallback_slippage_bps = .*$", "fallback_slippage_bps = -1",
+                               text), ">= 0"),
                        (text.replace("latency_ms = 250", "latency_ms = 0.25"), "integer")):
         p = tmp_path / "c.toml"
         p.write_text(bad)
@@ -271,3 +274,30 @@ def test_assumed_fill_uses_config_not_constants(frozen):
     wide = replace(CFG, fallback_spread_bps=Decimal("10"), fallback_slippage_bps=Decimal("0"))
     assert assumed_fill(o, wide).slippage_bps == Decimal("5")
     assert assumed_fill(o, wide).fill_time_ms == CFG.latency_ms
+
+
+PLACEHOLDER_BPS = Decimal(2)  # the uncalibrated value both fallbacks shipped with
+
+
+def test_fallback_costs_are_calibrated_not_placeholders():
+    for name in ("config.toml", "config.dev.toml"):
+        cfg = load_paper_config(ROOT / name)
+        assert (cfg.fallback_spread_bps, cfg.fallback_slippage_bps) != (PLACEHOLDER_BPS,) * 2
+        assert cfg.fallback_spread_bps != PLACEHOLDER_BPS, name
+        assert cfg.fallback_slippage_bps != PLACEHOLDER_BPS, name
+        text = (ROOT / name).read_text()
+        # The replaced placeholders stay visible, commented out, for traceability.
+        assert "# Previous uncalibrated placeholders: fallback_spread_bps = 2, " \
+               "fallback_slippage_bps = 2" in text, name
+
+
+def test_fallback_costs_match_committed_calibration_summary():
+    """Config = committed summary's p90, rounded up to 4 dp. The summary comes from a local
+    full-data run (tesseract.paper.calibrate); the data itself is never committed."""
+    s = json.loads((ROOT / "calibration" / "binance_fallback_summary.json").read_text())
+    assert s["config_percentile"].startswith("p90")
+    up = lambda v: Decimal(v).quantize(Decimal("0.0001"), rounding=ROUND_CEILING)
+    assert CFG.fallback_spread_bps == up(s["spread"]["p90"]) == Decimal("0.0133")
+    assert CFG.fallback_slippage_bps == up(s["impact_beyond_half_spread_bps"]["p90"]) == 0
+    assert s["spread"]["n"] == 978 and s["slippage_vs_mid_bps"]["n"] == 5868
+    assert s["slippage_vs_mid_bps"]["excluded_not_absorbed"] == 0

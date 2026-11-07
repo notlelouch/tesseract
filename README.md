@@ -178,6 +178,31 @@ Settings are in `[paper]` in `config.toml` and are read as exact decimals.
   the close of the Mudrex 1m candle that closed most recently at or before `t`, from REST
   batches received after the candle closed. It raises `NoReference` if that candle is missing.
 
+### Fallback calibration (`tesseract.paper.calibrate`)
+
+`fallback_spread_bps` and `fallback_slippage_bps` are calibrated from recorded Binance depth.
+Mudrex depth is not recorded, so they are Binance costs and probably understate Mudrex's.
+
+```
+make parse                                    # raw -> typed (data/ is never committed)
+.venv/bin/python -m tesseract.paper.calibrate --typed data/typed --out /tmp/summary.json
+```
+
+- One replayed book state per minute inside `depth_synced` segments (the first state at or
+  after each minute boundary). Spread = (ask − bid) / mid × 10000.
+- Slippage: `paper.fills.book_fill` walks 0.01, 0.1 and 1 BTC on each side with mid as the
+  reference. Orders the book cannot absorb are excluded and counted. "Impact" is the move
+  beyond the touch; it is what `fallback_slippage_bps` stands for, because the assumed fill
+  already adds half the spread.
+- Nearest-rank percentiles, exact decimals. Config uses p90, rounded up to 4 dp.
+- Only the aggregate summary is committed: `calibration/binance_fallback_summary.json`.
+  Tests reproduce the method on the committed fixtures and check that config matches the summary.
+
+Known limitation: `paper.book.replay` orders diffs by `recv_ns`, which is wall-clock time. In
+the 2026-11-05..07 recording the clock stepped back 30–64 ms three times. Each step reorders
+two diffs, fails the `pu` check and ends that segment early, so replay yields about 957 of
+about 1964 synced minutes. Calibration uses what replay yields; the fix belongs in replay.
+
 ## Endpoints used
 
 | venue | endpoint | params |
