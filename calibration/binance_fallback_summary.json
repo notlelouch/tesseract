@@ -2,8 +2,8 @@
   "data": "local recording, data/raw/binance/{ws_btcusdt_depth_100ms,rest_depth}; not committed",
   "data_cutoff": "2026-11-07T15:00:00Z (records with recv_ns before this)",
   "first_depth_synced": "2026-11-05T23:05:56Z",
-  "replayed_synced_minutes": 957.0,
-  "replayed_note": "replay yields ~957 of ~1964 depth_synced minutes: three wall-clock steps back in recv_ns end three long segments early (see README)",
+  "replayed_synced_minutes": 1836.9,
+  "replayed_note": "replay orders diffs by sequence (u, then E), not recv_ns; every one of 218 segments ends where the recorded chain breaks or the data ends",
   "command": "python -m tesseract.paper.calibrate --typed <typed root> --interval-s 60",
   "config_percentile": "p90, rounded up to 4 decimal places",
   "source": "binance USD-M BTCUSDT depth@100ms, depth_synced segments only",
@@ -12,10 +12,10 @@
   "last_sample": "2026-11-07T14:59:00Z",
   "segments_sampled": 117,
   "spread": {
-    "n": 978,
-    "p50": "0.01316784859080976343301614181",
-    "p75": "0.01319138523395911066319029694",
-    "p90": "0.01322297438908205450642272924"
+    "n": 1857,
+    "p50": "0.01316436432904855215030018042",
+    "p75": "0.01318135234084340882952886551",
+    "p90": "0.01320460603067562026986253345"
   },
   "order_sizes_btc": [
     "0.01",
@@ -23,25 +23,25 @@
     "1"
   ],
   "slippage_vs_mid_bps": {
-    "n": 5868,
+    "n": 11142,
     "excluded_not_absorbed": 0,
-    "p50": "0.006584271098144486561831902242",
-    "p75": "0.006596850004123031252576894533",
-    "p90": "0.006613524790467000826029246329"
+    "p50": "0.006582485454352767243972582632",
+    "p75": "0.006591084503635312657980056697",
+    "p90": "0.006605373206888875824928546375"
   },
   "impact_beyond_half_spread_bps": {
-    "n": 5868,
+    "n": 11142,
     "p50": "0",
     "p75": "0",
     "p90": "0"
   },
   "by_size": {
     "0.01": {
-      "n": 1956,
+      "n": 3714,
       "slippage_vs_mid_bps": {
-        "p50": "0.006583924295404881716508070904",
-        "p75": "0.006595692616979555331595148472",
-        "p90": "0.006611487194541027253211364618"
+        "p50": "0.006582182164524276075150090209",
+        "p75": "0.006590710920214830813155322625",
+        "p90": "0.006602303015337810134931266724"
       },
       "impact_beyond_half_spread_bps": {
         "p50": "0",
@@ -50,11 +50,11 @@
       }
     },
     "0.1": {
-      "n": 1956,
+      "n": 3714,
       "slippage_vs_mid_bps": {
-        "p50": "0.006584071682105217415923050637",
-        "p75": "0.006595840531044312835439715007",
-        "p90": "0.006612134191940998604178472081"
+        "p50": "0.006582242820254087737347448295",
+        "p75": "0.006590763045591603367879916297",
+        "p90": "0.006603000535503343429321152118"
       },
       "impact_beyond_half_spread_bps": {
         "p50": "0",
@@ -63,11 +63,11 @@
       }
     },
     "1": {
-      "n": 1956,
+      "n": 3714,
       "slippage_vs_mid_bps": {
-        "p50": "0.006584895435152937488929144550",
-        "p75": "0.006599401170337803547706081150",
-        "p90": "0.006617691338964106303946592584"
+        "p50": "0.006583438832940631206948424682",
+        "p75": "0.006592135977307231111717587621",
+        "p90": "0.006612352800761214054423630962"
       },
       "impact_beyond_half_spread_bps": {
         "p50": "0",

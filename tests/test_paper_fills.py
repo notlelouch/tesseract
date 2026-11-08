@@ -299,5 +299,5 @@ def test_fallback_costs_match_committed_calibration_summary():
     up = lambda v: Decimal(v).quantize(Decimal("0.0001"), rounding=ROUND_CEILING)
     assert CFG.fallback_spread_bps == up(s["spread"]["p90"]) == Decimal("0.0133")
     assert CFG.fallback_slippage_bps == up(s["impact_beyond_half_spread_bps"]["p90"]) == 0
-    assert s["spread"]["n"] == 978 and s["slippage_vs_mid_bps"]["n"] == 5868
+    assert s["spread"]["n"] == 1857 and s["slippage_vs_mid_bps"]["n"] == 11142
     assert s["slippage_vs_mid_bps"]["excluded_not_absorbed"] == 0
