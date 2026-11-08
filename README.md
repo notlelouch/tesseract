@@ -180,8 +180,10 @@ Settings are in `[paper]` in `config.toml` and are read as exact decimals.
 
 ### Fallback calibration (`tesseract.paper.calibrate`)
 
-`fallback_spread_bps` and `fallback_slippage_bps` are calibrated from recorded Binance depth.
-Mudrex depth is not recorded, so they are Binance costs and probably understate Mudrex's.
+The measured Binance values (spread p90 ≈ 0.0133 bps, impact p90 = 0 bps) are kept as reference in
+`calibration/binance_fallback_summary.json`, but they almost certainly understate Mudrex's costs.
+Until Mudrex depth is recorded, config sets `fallback_spread_bps` and `fallback_slippage_bps` to a
+deliberate 1 bp floor (`configured_floor` in the summary), and a test fails if either drops below the measured p90.
 
 ```
 make parse                                    # raw -> typed (data/ is never committed)
@@ -196,7 +198,7 @@ make parse                                    # raw -> typed (data/ is never com
   already adds half the spread.
 - Nearest-rank percentiles, exact decimals. Config uses p90, rounded up to 4 dp.
 - Only the aggregate summary is committed: `calibration/binance_fallback_summary.json`.
-  Tests reproduce the method on the committed fixtures and check that config matches the summary.
+  Tests reproduce the method on the committed fixtures and check that config equals `configured_floor`.
 
 Diff order: `paper.book.replay` orders diffs by Binance sequence (`u`, then event time `E`),
 never by `recv_ns`. `recv_ns` is wall-clock time; in the 2026-11-05..07 recording it stepped back

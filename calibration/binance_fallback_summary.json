@@ -6,6 +6,11 @@
   "replayed_note": "replay orders diffs by sequence (u, then E), not recv_ns; every one of 218 segments ends where the recorded chain breaks or the data ends",
   "command": "python -m tesseract.paper.calibrate --typed <typed root> --interval-s 60",
   "config_percentile": "p90, rounded up to 4 decimal places",
+  "configured_floor": {
+    "spread_bps": "1.0",
+    "slippage_bps": "1.0",
+    "note": "deliberate floor used in config.toml/config.dev.toml, not calibrated; replace when Mudrex depth is recorded"
+  },
   "source": "binance USD-M BTCUSDT depth@100ms, depth_synced segments only",
   "interval_s": 60.0,
   "first_sample": "2026-11-05T23:06:00Z",

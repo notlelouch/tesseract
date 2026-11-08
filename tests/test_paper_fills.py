@@ -279,7 +279,7 @@ def test_assumed_fill_uses_config_not_constants(frozen):
 PLACEHOLDER_BPS = Decimal(2)  # the uncalibrated value both fallbacks shipped with
 
 
-def test_fallback_costs_are_calibrated_not_placeholders():
+def test_fallback_costs_are_not_the_old_placeholders():
     for name in ("config.toml", "config.dev.toml"):
         cfg = load_paper_config(ROOT / name)
         assert (cfg.fallback_spread_bps, cfg.fallback_slippage_bps) != (PLACEHOLDER_BPS,) * 2
@@ -291,13 +291,42 @@ def test_fallback_costs_are_calibrated_not_placeholders():
                "fallback_slippage_bps = 2" in text, name
 
 
-def test_fallback_costs_match_committed_calibration_summary():
-    """Config = committed summary's p90, rounded up to 4 dp. The summary comes from a local
-    full-data run (tesseract.paper.calibrate); the data itself is never committed."""
-    s = json.loads((ROOT / "calibration" / "binance_fallback_summary.json").read_text())
+SUMMARY = ROOT / "calibration" / "binance_fallback_summary.json"
+FLOOR_COMMENT = ("# Deliberate floor, not calibrated. Measured Binance values are in "
+                 "calibration/binance_fallback_summary.json. Replace when Mudrex depth is recorded.")
+
+
+def test_fallback_costs_are_the_configured_floor_not_the_measured_values():
+    """The summary keeps the measured Binance p90s (from a local full-data run of
+    tesseract.paper.calibrate; the data itself is never committed). Config uses the summary's
+    configured_floor instead, because Binance costs understate Mudrex's."""
+    s = json.loads(SUMMARY.read_text())
     assert s["config_percentile"].startswith("p90")
     up = lambda v: Decimal(v).quantize(Decimal("0.0001"), rounding=ROUND_CEILING)
-    assert CFG.fallback_spread_bps == up(s["spread"]["p90"]) == Decimal("0.0133")
-    assert CFG.fallback_slippage_bps == up(s["impact_beyond_half_spread_bps"]["p90"]) == 0
+    # Measured values stay in the summary, unchanged.
+    assert up(s["spread"]["p90"]) == Decimal("0.0133")
+    assert up(s["impact_beyond_half_spread_bps"]["p90"]) == 0
     assert s["spread"]["n"] == 1857 and s["slippage_vs_mid_bps"]["n"] == 11142
     assert s["slippage_vs_mid_bps"]["excluded_not_absorbed"] == 0
+    # Config equals the labeled floor, not the measured values.
+    floor = s["configured_floor"]
+    for name in ("config.toml", "config.dev.toml"):
+        cfg = load_paper_config(ROOT / name)
+        assert cfg.fallback_spread_bps == Decimal(floor["spread_bps"]) == Decimal("1.0"), name
+        assert cfg.fallback_slippage_bps == Decimal(floor["slippage_bps"]) == Decimal("1.0"), name
+        assert cfg.fallback_spread_bps != up(s["spread"]["p90"]), name
+        assert cfg.fallback_slippage_bps != up(s["impact_beyond_half_spread_bps"]["p90"]), name
+        text = (ROOT / name).read_text()
+        for key in ("fallback_spread_bps", "fallback_slippage_bps"):
+            assert re.search(rf"(?m)^{key} = 1\.0 +{re.escape(FLOOR_COMMENT)}$", text), (name, key)
+
+
+def test_fallback_costs_never_below_measured_p90():
+    """Whatever the fallback is set to, it must not undercut the measured Binance p90 costs."""
+    s = json.loads(SUMMARY.read_text())
+    spread_p90 = Decimal(s["spread"]["p90"])
+    impact_p90 = Decimal(s["impact_beyond_half_spread_bps"]["p90"])
+    for name in ("config.toml", "config.dev.toml"):
+        cfg = load_paper_config(ROOT / name)
+        assert cfg.fallback_spread_bps >= spread_p90, name
+        assert cfg.fallback_slippage_bps >= impact_p90, name

@@ -84,14 +84,15 @@ klines = 1                          # limit < 100
 taker_fee = 0.0005
 latency_ms = 250
 # Used only when no depth_synced Binance book covers the fill time; such fills are tagged
-# "assumed". Calibrated from recorded Binance USD-M BTCUSDT depth (Mudrex depth is not recorded,
-# so these are Binance costs, not Mudrex's): 978 one-per-minute book samples from 117 synced
-# segments, 2026-11-05T23:06Z..2026-11-07T14:59Z; slippage over 5868 book_fill walks of
-# 0.01/0.1/1 BTC per side. Percentile used: p90, rounded up to 4 dp.
-#   spread p90 = 0.01322297... bps (about one 0.1 USD tick)          -> 0.0133
-#   impact beyond half spread p90 = 0 (slippage vs mid p90 = 0.00661 bps,
-#   which is half the spread; the assumed fill adds spread/2 itself) -> 0
+# "assumed". Set to a deliberate floor, not the measured values: Mudrex depth is not recorded,
+# and Binance costs almost certainly understate what Mudrex charges.
+# Measured on Binance USD-M BTCUSDT (reference only, not used here): 1857 one-per-minute book
+# samples from 117 synced segments, 2026-11-05T23:06Z..2026-11-07T14:59Z; 11142 book_fill walks
+# of 0.01/0.1/1 BTC per side.
+#   spread p90 = 0.013204... bps (about one 0.1 USD tick)
+#   impact beyond half spread p90 = 0 (slippage vs mid p90 = 0.00661 bps, half the spread)
 # Full summary: calibration/binance_fallback_summary.json (tesseract.paper.calibrate).
 # Previous uncalibrated placeholders: fallback_spread_bps = 2, fallback_slippage_bps = 2
-fallback_spread_bps = 0.0133
-fallback_slippage_bps = 0
+# Previous Binance-calibrated values: fallback_spread_bps = 0.0133, fallback_slippage_bps = 0
+fallback_spread_bps = 1.0  # Deliberate floor, not calibrated. Measured Binance values are in calibration/binance_fallback_summary.json. Replace when Mudrex depth is recorded.
+fallback_slippage_bps = 1.0  # Deliberate floor, not calibrated. Measured Binance values are in calibration/binance_fallback_summary.json. Replace when Mudrex depth is recorded.
